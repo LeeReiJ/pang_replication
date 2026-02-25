@@ -1,10 +1,10 @@
 from pyray import *
 from pang import Game
-from settings import WINDOW_WIDTH, WINDOW_HEIGHT
+from settings import WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE, TARGET_FPS
 
 if __name__ == '__main__':
-    init_window(WINDOW_WIDTH, WINDOW_HEIGHT, "arkanoid")
-    set_target_fps(60)
+    init_window(WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE)
+    set_target_fps(TARGET_FPS)
 
     current_game = Game()
     current_game.startup()
