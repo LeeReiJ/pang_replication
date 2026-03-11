@@ -1,211 +1,238 @@
+import os
 from pyray import *
 from settings import *
-from entities import Player, Shoot, Ball, Points
-import random
+from entities import Player, Ball, Platform
 
 
 class Game:
     def __init__(self):
         self.game_over = False
-        self.victory   = False
-        self.pause     = False
-        self.score     = 0
-        self.gravity   = 0.0
+        self.pause = False
+        self.survival_time = 0.0
+        self.player = None
+        self.balls = []
+        self.platforms = []
+        self._platform_timer = 0.0
 
-        self.player        = Player()
-        self.shoots        = [Shoot() for _ in range(PLAYER_MAX_SHOOTS)]
-        self.big_balls     = []
-        self.medium_balls  = []
-        self.small_balls   = []
-        self.points_popups = [Points() for _ in range(5)]
-        self.line_position = Vector2(0.0, 0.0)
+        self.dev_mode = False
+        self.invincible = False
+        self.show_hitbox = False
 
-        self._count_medium = 0
-        self._count_small  = 0
-        self._destroyed    = 0
+        self._bg_texture = None
+        self._player_texture = None
+        self._ball_textures = []
 
-    # ------------------------------------------------------------------ #
-    #  Public lifecycle
-    # ------------------------------------------------------------------ #
+        self._snd_jump = None
+        self._snd_ball_hit = None
+        self._snd_death = None
+        self._snd_split = None
+        self._snd_restart = None
+        self._music = None
+
     def startup(self):
+        init_audio_device()
+        self._load_assets()
         self._init_game()
+        self._music_play()
 
     def shutdown(self):
-        pass
+        if self._bg_texture: unload_texture(self._bg_texture)
+        if self._player_texture: unload_texture(self._player_texture)
+        for tx in self._ball_textures:
+            unload_texture(tx)
+        for snd in [self._snd_jump, self._snd_ball_hit, self._snd_death, self._snd_split, self._snd_restart]:
+            if snd: unload_sound(snd)
+        if self._music: unload_music_stream(self._music)
+        close_audio_device()
+
+    def _music_play(self):
+        if not self._music:
+            return
+        seek_music_stream(self._music, 0.0)
+        play_music_stream(self._music)
+
+    def _music_stop(self):
+        if self._music:
+            stop_music_stream(self._music)
+
+    def _load_sound_safe(self, path):
+        if os.path.exists(path):
+            return load_sound(path)
+        print(f"[audio] missing {path} — run generate_assets.py")
+        return None
+
+    def _play(self, snd):
+        if snd:
+            play_sound(snd)
+
+    def _load_assets(self):
+        self._bg_texture = load_texture("assets/background.png")
+        self._player_texture = load_texture("assets/player.png")
+        self._ball_textures = [
+            load_texture("assets/ball_big.png"),
+            load_texture("assets/ball_medium.png"),
+            load_texture("assets/ball_small.png"),
+        ]
+        Ball.TEXTURES = self._ball_textures
+
+        self._snd_jump = self._load_sound_safe("assets/jump.wav")
+        self._snd_ball_hit = self._load_sound_safe("assets/ball_hit.wav")
+        self._snd_death = self._load_sound_safe("assets/death.wav")
+        self._snd_split = self._load_sound_safe("assets/split.wav")
+        self._snd_restart = self._load_sound_safe("assets/restart.wav")
+
+        if os.path.exists("assets/music.wav"):
+            self._music = load_music_stream("assets/music.wav")
+            set_music_volume(self._music, 0.4)
+        else:
+            print("[audio] missing assets/music.wav — run generate_assets.py")
+
+    def _init_game(self):
+        self.game_over = False
+        self.pause = False
+        self.survival_time = 0.0
+        self._platform_timer = 0.0
+        self.platforms = []
+        self.player = Player(self._player_texture)
+        self.balls = [Ball(generation=0)]
 
     def update(self):
-        if not self.game_over and not self.victory:
-            if is_key_pressed(KeyboardKey.KEY_P):
-                self.pause = not self.pause
+        if self._music:
+            update_music_stream(self._music)
 
-            if not self.pause:
-                self._update_player()
-                self._update_shoots()
-                self._update_balls()
-                self._check_player_ball_collisions()
-                self._check_shoot_ball_collisions()
+        if is_key_pressed(KeyboardKey.KEY_GRAVE):
+            self.dev_mode = not self.dev_mode
+            if not self.dev_mode:
+                self.invincible = False
+                self.show_hitbox = False
 
-                total = MAX_BIG_BALLS + MAX_BIG_BALLS * 2 + MAX_BIG_BALLS * 4
-                if self._destroyed == total:
-                    self.victory = True
-        else:
+        if self.dev_mode:
+            if is_key_pressed(KeyboardKey.KEY_I):
+                self.invincible = not self.invincible
+            if is_key_pressed(KeyboardKey.KEY_H):
+                self.show_hitbox = not self.show_hitbox
+
+        if self.game_over:
             if is_key_pressed(KeyboardKey.KEY_ENTER):
+                self._play(self._snd_restart)
+                self._music_play()
                 self._init_game()
+            return
 
-        for p in self.points_popups:
+        if is_key_pressed(KeyboardKey.KEY_P):
+            self.pause = not self.pause
+        if self.pause:
+            return
+
+        dt = get_frame_time()
+        self.survival_time += dt
+
+        self._update_platforms(dt)
+
+        if self.player.update(self.platforms):
+            self._play(self._snd_jump)
+
+        self._update_balls()
+        self._check_collisions()
+
+    def _update_platforms(self, dt):
+        self._platform_timer += dt
+        if self._platform_timer >= PLATFORM_SPAWN_INTERVAL:
+            self._platform_timer = 0.0
+            self.platforms.append(Platform())
+        for p in self.platforms:
             p.update()
-
-    def draw(self):
-        if not self.game_over:
-            self.player.draw()
-
-            for ball in self.big_balls:
-                ball.draw(DARKGRAY)
-            for ball in self.medium_balls:
-                ball.draw(GRAY)
-            for ball in self.small_balls:
-                ball.draw(GRAY)
-
-            for sh in self.shoots:
-                sh.draw(self.line_position)
-
-            for p in self.points_popups:
-                p.draw()
-
-            draw_text(f"SCORE: {self.score}", 10, 10, 20, LIGHTGRAY)
-
-            if self.victory:
-                msg = "YOU WIN!"
-                draw_text(msg, WINDOW_WIDTH // 2 - measure_text(msg, 60) // 2, 100, 60, LIGHTGRAY)
-                sub = "PRESS [ENTER] TO PLAY AGAIN"
-                draw_text(sub, WINDOW_WIDTH // 2 - measure_text(sub, 20) // 2, WINDOW_HEIGHT // 2 - 50, 20, LIGHTGRAY)
-
-            if self.pause:
-                msg = "GAME PAUSED"
-                draw_text(msg, WINDOW_WIDTH // 2 - measure_text(msg, 40) // 2, WINDOW_HEIGHT // 2 - 40, 40, LIGHTGRAY)
-        else:
-            msg = "PRESS [ENTER] TO PLAY AGAIN"
-            draw_text(msg, WINDOW_WIDTH // 2 - measure_text(msg, 20) // 2, WINDOW_HEIGHT // 2 - 50, 20, LIGHTGRAY)
-
-    # ------------------------------------------------------------------ #
-    #  Init
-    # ------------------------------------------------------------------ #
-    def _init_game(self):
-        self.game_over     = False
-        self.victory       = False
-        self.pause         = False
-        self.score         = 0
-        self.gravity       = 0.25
-        self.line_position = Vector2(0.0, 0.0)
-        self._count_medium = 0
-        self._count_small  = 0
-        self._destroyed    = 0
-
-        self.player        = Player()
-        self.shoots        = [Shoot() for _ in range(PLAYER_MAX_SHOOTS)]
-        self.points_popups = [Points() for _ in range(5)]
-
-        # Big balls: random position in upper half, non-zero velocity
-        self.big_balls = [Ball(BIG_BALL_RADIUS, BIG_BALL_POINTS) for _ in range(MAX_BIG_BALLS)]
-        for ball in self.big_balls:
-            ball.position = Vector2(
-                random.randint(int(ball.radius), WINDOW_WIDTH  - int(ball.radius)),
-                random.randint(int(ball.radius), WINDOW_HEIGHT // 2),
-            )
-            vx, vy = 0, 0
-            while vx == 0 or vy == 0:
-                vx = random.randint(-int(BALLS_SPEED), int(BALLS_SPEED))
-                vy = random.randint(-int(BALLS_SPEED), int(BALLS_SPEED))
-            ball.speed  = Vector2(float(vx), float(vy))
-            ball.active = True
-
-        # Medium / small pools start inactive
-        self.medium_balls = [Ball(MEDIUM_BALL_RADIUS, MEDIUM_BALL_POINTS, extra_gravity=0.12)
-                             for _ in range(MAX_BIG_BALLS * 2)]
-        self.small_balls  = [Ball(SMALL_BALL_RADIUS,  SMALL_BALL_POINTS,  extra_gravity=0.25)
-                             for _ in range(MAX_BIG_BALLS * 4)]
-
-    # ------------------------------------------------------------------ #
-    #  Per-frame update helpers  (thin — real logic lives in the classes)
-    # ------------------------------------------------------------------ #
-    def _update_player(self):
-        self.player.update()
-
-    def _update_shoots(self):
-        # Fire
-        if is_key_pressed(KeyboardKey.KEY_SPACE):
-            for sh in self.shoots:
-                if not sh.active:
-                    sh.fire(self.player.position, self.player.ship_height)
-                    self.line_position = Vector2(self.player.position.x,
-                                                 self.player.position.y)
-                    break
-
-        for sh in self.shoots:
-            sh.update()
+        self.platforms = [p for p in self.platforms if p.active]
 
     def _update_balls(self):
-        for ball in self.big_balls:
-            ball.update(self.gravity)
-        for ball in self.medium_balls:
-            ball.update(self.gravity)
-        for ball in self.small_balls:
-            ball.update(self.gravity)
+        new_balls = []
+        for ball in self.balls:
+            should_split = ball.update()
+            if should_split and ball.generation < Ball.MAX_GENERATION:
+                self._play(self._snd_split)
+                new_balls.extend(ball.split())
+            elif not ball.active and ball.generation == Ball.MAX_GENERATION:
+                new_balls.append(Ball())
 
-    def _check_player_ball_collisions(self):
-        all_balls = self.big_balls + self.medium_balls + self.small_balls
-        for ball in all_balls:
+        self.balls = [b for b in self.balls if b.active] + new_balls
+
+        for ball in self.balls:
+            if (ball.position.x - ball.radius <= 1 or
+                    ball.position.x + ball.radius >= WINDOW_WIDTH - 1 or
+                    ball.position.y + ball.radius >= WINDOW_HEIGHT - GROUND_HEIGHT - 1):
+                if self._snd_ball_hit and not is_sound_playing(self._snd_ball_hit):
+                    self._play(self._snd_ball_hit)
+                break
+
+    def _check_collisions(self):
+        if self.invincible:
+            return
+        for ball in self.balls:
             if self.player.collides_with_ball(ball):
+                self._play(self._snd_death)
+                self._music_stop()
                 self.game_over = True
                 return
 
-    def _check_shoot_ball_collisions(self):
-        lx = self.line_position.x
+    def draw(self):
+        src = Rectangle(0, 0, float(self._bg_texture.width), float(self._bg_texture.height))
+        draw_texture_pro(self._bg_texture, src, Rectangle(0, 0, float(WINDOW_WIDTH), float(WINDOW_HEIGHT)), Vector2(0, 0), 0.0, WHITE)
 
-        for sh in self.shoots:
-            if not sh.active:
-                continue
+        draw_rectangle(0, WINDOW_HEIGHT - GROUND_HEIGHT, WINDOW_WIDTH, GROUND_HEIGHT, DARKBROWN)
+        draw_rectangle(0, WINDOW_HEIGHT - GROUND_HEIGHT, WINDOW_WIDTH, 3, BROWN)
 
-            # Big balls → spawn 2 medium children
-            for ball in self.big_balls:
-                if sh.hits_ball(ball, lx):
-                    self._destroy_ball(sh, ball)
-                    self._count_medium = ball.spawn_children(
-                        self.medium_balls, self._count_medium
-                    )
-                    break
+        if not self.game_over:
+            for p in self.platforms:
+                p.draw()
+            self.player.draw()
+            for ball in self.balls:
+                ball.draw()
 
-            if not sh.active:
-                continue
+            if self.show_hitbox:
+                self._draw_hitboxes()
 
-            # Medium balls → spawn 2 small children
-            for ball in self.medium_balls:
-                if sh.hits_ball(ball, lx):
-                    self._destroy_ball(sh, ball)
-                    self._count_small = ball.spawn_children(
-                        self.small_balls, self._count_small
-                    )
-                    break
+            draw_text(f"SURVIVED: {self.survival_time:.1f}s", 10, 10, 24, WHITE)
+            draw_text(f"BALLS: {len(self.balls)}", 10, 38, 18, LIGHTGRAY)
 
-            if not sh.active:
-                continue
+            if self.dev_mode:
+                self._draw_dev_hud()
 
-            # Small balls → no children
-            for ball in self.small_balls:
-                if sh.hits_ball(ball, lx):
-                    self._destroy_ball(sh, ball)
-                    break
+            if self.pause:
+                msg = "PAUSED"
+                draw_text(msg, WINDOW_WIDTH // 2 - measure_text(msg, 40) // 2, WINDOW_HEIGHT // 2 - 20, 40, WHITE)
+        else:
+            draw_rectangle(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, Color(0, 0, 0, 160))
+            msg = "YOU DIED"
+            sub = f"Survived: {self.survival_time:.1f}s"
+            sub2 = "PRESS [ENTER] TO PLAY AGAIN"
+            draw_text(msg, WINDOW_WIDTH // 2 - measure_text(msg, 60) // 2, WINDOW_HEIGHT // 2 - 80, 60, RED)
+            draw_text(sub, WINDOW_WIDTH // 2 - measure_text(sub, 30) // 2, WINDOW_HEIGHT // 2, 30, WHITE)
+            draw_text(sub2, WINDOW_WIDTH // 2 - measure_text(sub2, 20) // 2, WINDOW_HEIGHT // 2 + 50, 20, LIGHTGRAY)
 
-    def _destroy_ball(self, sh: Shoot, ball: Ball):
-        """Common bookkeeping when a shoot kills a ball."""
-        sh.reset()
-        ball.active      = False
-        self._destroyed += 1
-        self.score      += ball.points
-        self._spawn_popup(ball.position, ball.points)
+    def _draw_hitboxes(self):
+        p = self.player
+        col = GREEN if self.invincible else YELLOW
+        draw_circle_lines(int(p.collider_center.x), int(p.collider_center.y), int(p.collider_radius), col)
+        draw_rectangle_lines(int(p.position.x), int(p.position.y), int(p.size.x), int(p.size.y), fade(col, 0.5))
+        for ball in self.balls:
+            if ball.active:
+                draw_circle_lines(int(ball.position.x), int(ball.position.y), int(ball.radius), ORANGE)
+        for plat in self.platforms:
+            draw_rectangle_lines(int(plat.rect.x), int(plat.rect.y), int(plat.rect.width), int(plat.rect.height), SKYBLUE)
 
-    def _spawn_popup(self, position: Vector2, value: int):
-        for p in self.points_popups:
-            if p.alpha == 0.0:
-                p.activate(position, value)
-                break
+    def _draw_dev_hud(self):
+        p = self.player
+        lines = [
+            "[ DEV MODE — ` to off ]",
+            f"I  invincible : {'ON' if self.invincible else 'off'}",
+            f"H  hitboxes   : {'ON' if self.show_hitbox else 'off'}",
+            "---------------------",
+            f"pos  x:{p.position.x:.0f}  y:{p.position.y:.0f}",
+            f"vel  x:{p.velocity.x:.2f}  y:{p.velocity.y:.2f}",
+            f"on_ground: {p.on_ground}",
+            f"balls: {len(self.balls)}",
+        ]
+        draw_rectangle(WINDOW_WIDTH - 216, 4, 210, len(lines) * 18 + 10, Color(0, 0, 0, 170))
+        for i, line in enumerate(lines):
+            color = GOLD if line.startswith("[ DEV") else (LIME if "ON" in line else LIGHTGRAY)
+            draw_text(line, WINDOW_WIDTH - 210, 10 + i * 18, 14, color)
