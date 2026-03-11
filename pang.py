@@ -80,12 +80,8 @@ class Game:
         self._snd_death = self._load_sound_safe("assets/death.wav")
         self._snd_split = self._load_sound_safe("assets/split.wav")
         self._snd_restart = self._load_sound_safe("assets/restart.wav")
-
-        if os.path.exists("assets/music.wav"):
-            self._music = load_music_stream("assets/music.wav")
-            set_music_volume(self._music, 0.4)
-        else:
-            print("[audio] missing assets/music.wav — run generate_assets.py")
+        self._music = load_music_stream("assets/music.wav")
+        set_music_volume(self._music, 0.4)
 
     def _init_game(self):
         self.game_over = False
